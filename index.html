@@ -319,8 +319,8 @@
         <div class="search-controls">
             <label for="searchQuery">Search for a person or company</label>
             <div class="input-group">
-                <input type="text" id="searchQuery" placeholder="Loading schema..." aria-label="Contractor Name" disabled>
-                <button id="searchBtn" disabled>Search Records</button>
+                <input type="text" id="searchQuery" placeholder="e.g. Toro Construction" aria-label="Contractor Name">
+                <button id="searchBtn">Search Records</button>
             </div>
         </div>
 
@@ -350,46 +350,6 @@
 
     let currentResults = [];
     let lastSearchTerm = "";
-    let contactNameFields = [];
-    let allFields = [];
-
-    // --- NEW ---
-    // Function to fetch schema and prepare the app
-    async function initializeApp() {
-        showLoading(true, "Loading dataset schema...");
-        try {
-            // This endpoint provides metadata about the dataset, including columns
-            const response = await fetch('https://data.cityofchicago.org/api/views/ydr8-5enu.json');
-            if (!response.ok) throw new Error('Failed to load dataset schema.');
-            
-            const schema = await response.json();
-            
-            // Extract all column fieldNames
-            allFields = schema.columns.map(col => col.fieldName);
-
-            // Filter for just the contact name fields for searching
-            contactNameFields = allFields.filter(fieldName => fieldName.startsWith('contact_') && fieldName.endsWith('_name'));
-            
-            if (contactNameFields.length === 0) {
-                 throw new Error('Could not find any contact fields in the schema.');
-            }
-            
-            console.log(`Schema loaded. Found ${contactNameFields.length} contact name fields.`);
-            searchBtn.disabled = false;
-            searchQuery.disabled = false;
-            searchQuery.placeholder = `e.g. Toro Construction`;
-
-        } catch (error) {
-            console.error(error);
-            resultStats.innerHTML = `<p style="color:var(--error-color)">Could not initialize application: ${error.message}</p>`;
-            searchBtn.disabled = true;
-            searchQuery.disabled = true;
-            searchQuery.placeholder = 'Application failed to load';
-        } finally {
-            showLoading(false);
-        }
-    }
-
 
     searchBtn.addEventListener('click', performSearch);
     searchQuery.addEventListener('keypress', (e) => {
@@ -398,20 +358,20 @@
 
     async function performSearch() {
         const query = searchQuery.value.trim().toUpperCase();
-        if (!query || contactNameFields.length === 0) return;
+        if (!query) return;
 
         lastSearchTerm = query;
-        showLoading(true, "Querying City of Chicago Data Portal...");
+        showLoading(true);
         resultsContainer.innerHTML = '';
         exportBtn.style.display = 'none';
         resultStats.textContent = '';
 
         try {
-            // --- MODIFIED ---
-            // Build SoQL query dynamically using the fields from the schema
-            const contactWhereClauses = contactNameFields.map(field => `upper(${field}) like '%${query}%'`);
-            const whereClause = contactWhereClauses.join(' OR ');
+            // Build SoQL query
+            const contactFields = Array.from({length: 15}, (_, i) => `upper(contact_${i+1}_name) like '%${query}%'`);
+            const whereClause = contactFields.join(' OR ');
             
+            // Encode for URL
             const url = `https://data.cityofchicago.org/resource/ydr8-5enu.json?$where=${encodeURIComponent(whereClause)}&$limit=2000`;
             
             const response = await fetch(url);
@@ -429,16 +389,9 @@
         }
     }
 
-    // --- MODIFIED ---
-    // Added a message parameter
-    function showLoading(isLoading, message = "Querying City of Chicago Data Portal...") {
-        const loaderText = loader.querySelector('p');
+    function showLoading(isLoading) {
         loader.style.display = isLoading ? 'block' : 'none';
-        if (loaderText) {
-            loaderText.textContent = message;
-        }
         searchBtn.disabled = isLoading;
-        searchQuery.disabled = isLoading;
     }
 
     function displayResults(data, term) {
@@ -454,19 +407,15 @@
             const card = document.createElement('div');
             card.className = 'permit-card';
 
-            // --- MODIFIED ---
-            // Dynamically find matching and other contacts
+            // Extract matching contacts
             let matches = [];
             let others = [];
-            
-            // Loop through the numeric prefixes 1 to 30 (or a higher reasonable number)
-            for(let i = 1; i <= 30; i++) {
-                const nameField = `contact_${i}_name`;
-                const typeField = `contact_${i}_type`;
-
-                if (permit[nameField]) {
-                    const info = { name: permit[nameField], type: permit[typeField] || 'N/A' };
-                    if (permit[nameField].toUpperCase().includes(term)) {
+            for(let i=1; i<=15; i++) {
+                const name = permit[`contact_${i}_name`];
+                const type = permit[`contact_${i}_type`];
+                if (name) {
+                    const info = { name, type };
+                    if (name.toUpperCase().includes(term)) {
                         matches.push(info);
                     } else {
                         others.push(info);
@@ -474,11 +423,11 @@
                 }
             }
 
-
             const issueDate = permit.issue_date ? permit.issue_date.split('T')[0] : 'Unknown Date';
             const cost = permit.reported_cost ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(permit.reported_cost) : '$0.00';
             const address = `${permit.street_number || ''} ${permit.street_direction || ''} ${permit.street_name || ''}`.trim() || 'No Address Listed';
             
+            // Generate Google Maps Link with "Chicago, IL" included
             const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address + ', CHICAGO, IL')}`;
 
             card.innerHTML = `
@@ -522,13 +471,12 @@
         });
     }
 
-    // --- MODIFIED ---
     // CSV Generation Logic
     exportBtn.addEventListener('click', () => {
         if (currentResults.length === 0) return;
 
-        // Use the dynamically loaded `allFields` for headers
-        const headers = allFields.filter(h => !h.startsWith(':')); // Filter out system columns like :id
+        // Get all unique keys for headers
+        const headers = Array.from(new Set(currentResults.flatMap(Object.keys)));
         
         const csvContent = [
             headers.join(','),
@@ -538,8 +486,7 @@
                 cell = cell.replace(/"/g, '""');
                 return `"${cell}"`;
             }).join(','))
-        ].join('\n')
-        ];
+        ].join('\n');
 
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
@@ -551,10 +498,6 @@
         link.click();
         document.body.removeChild(link);
     });
-
-    // --- NEW ---
-    // Initialize the application on page load
-    document.addEventListener('DOMContentLoaded', initializeApp);
 </script>
 
 </body>
